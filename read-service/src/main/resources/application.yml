@@ -132,6 +132,16 @@ app:
   projection:
     processed-event-retention-days: ${PROCESSED_EVENT_RETENTION_DAYS:30}
 
+  cors:
+    # Kosong = tidak ada header CORS yang dikirim, browser menolak permintaan lintas-origin.
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:}
+
+  rate-limit:
+    # Dimatikan secara default. Baca RateLimitFilter untuk batasannya sebelum menyalakan.
+    enabled: ${RATE_LIMIT_ENABLED:false}
+    requests: ${RATE_LIMIT_REQUESTS:300}
+    window-seconds: ${RATE_LIMIT_WINDOW_SECONDS:60}
+
 logging:
   pattern:
     console: "%d{HH:mm:ss.SSS} %-5level [%X{traceId:-}] %logger{36} - %msg%n"

@@ -2,6 +2,9 @@ package com.example.write.outbox;
 
 import com.example.common.event.Topics;
 import com.example.write.config.AppProperties;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.write.domain.OutboxEvent;
 import com.example.write.domain.OutboxStatus;
 import com.example.write.repository.OutboxEventRepository;
@@ -56,6 +59,7 @@ public class OutboxPublisher {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final AppProperties properties;
     private final MeterRegistry meterRegistry;
+    private final ObjectMapper objectMapper;
 
     private Counter publishedCounter;
     private Counter retryCounter;
@@ -123,11 +127,29 @@ public class OutboxPublisher {
         ProducerRecord<String, String> record = new ProducerRecord<>(
                 Topics.PRODUCT_EVENTS, event.getAggregateId().toString(), event.getPayload());
 
-        addHeader(record, Topics.Headers.EVENT_ID, event.getEventId().toString());
-        addHeader(record, Topics.Headers.EVENT_TYPE, event.getEventType().name());
-        addHeader(record, Topics.Headers.AGGREGATE_ID, event.getAggregateId().toString());
-        addHeader(record, Topics.Headers.AGGREGATE_VERSION, String.valueOf(event.getAggregateVersion()));
+        // Header yang dicatat saat event dibuat, termasuk trace-id milik request HTTP asal.
+        // Inilah yang menyambung log write-service dengan log read-service; tanpa disalin
+        // ke sini, penelusuran terputus tepat di batas antar service.
+        for (Map.Entry<String, String> entry : storedHeaders(event).entrySet()) {
+            addHeader(record, entry.getKey(), entry.getValue());
+        }
         return record;
+    }
+
+    private Map<String, String> storedHeaders(OutboxEvent event) {
+        if (event.getHeaders() == null || event.getHeaders().isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(event.getHeaders(), new TypeReference<Map<String, String>>() {
+            });
+        } catch (JsonProcessingException e) {
+            // Header hanya untuk observability. Kalau rusak, event tetap harus terkirim —
+            // menahan event demi metadata log adalah pertukaran yang salah.
+            log.warn("Header outbox untuk event {} tidak bisa dibaca, dikirim tanpa header: {}",
+                    event.getEventId(), e.getMessage());
+            return Map.of();
+        }
     }
 
     private void addHeader(ProducerRecord<String, String> record, String key, String value) {

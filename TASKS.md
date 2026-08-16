@@ -45,24 +45,24 @@ Detail tiap task ada di [PLAN.md](./PLAN.md) §11. File ini dipakai untuk tracki
 - [x] `[P]` **T-28** Single-flight lock anti-stampede (`SET NX PX`)
 - [x] `[P]` **T-29** Metrik cache hit/miss/negative/bypass + endpoint admin evict
 
-## Fase 5 — Cross-cutting
-- [ ] **T-30** Correlation id: HTTP → MDC → header Kafka → consumer → response
-- [ ] `[P]` **T-31** Health indicator kustom + logging terstruktur
-- [ ] `[P]` **T-32** Eksternalisasi config & secret
-- [ ] `[P]` **T-33** Rate limit sederhana + CORS + graceful shutdown
+## Fase 5 — Cross-cutting ✅
+- [x] **T-30** Correlation id: HTTP → MDC → header Kafka → consumer → response — **ditemukan bocor, diperbaiki**
+- [x] `[P]` **T-31** Health indicator kustom (`outbox`, `readCache`) + log konfigurasi efektif saat startup
+- [x] `[P]` **T-32** Eksternalisasi config & secret; rahasia disamarkan di log
+- [x] `[P]` **T-33** Rate limit (opsional, mati default) + CORS (mati default) + graceful shutdown
 
-## Fase 6 — Testing
-- [ ] **T-34** Unit test service layer (Mockito)
-- [ ] **T-35** IT write-service (Testcontainers: Postgres + Kafka + MinIO)
-- [ ] **T-36** IT read-service (Testcontainers: Postgres + Redis + Kafka)
-- [ ] ⭐ **T-37** **E2E**: POST → event → projection → GET(MISS) → GET(HIT) → upload image → GET
-- [ ] `[P]` **T-38** Test resiliensi: Redis / Kafka / S3 mati
+## Fase 6 — Testing ✅
+- [x] **T-34** Unit test: `ImageValidatorTest`, `ProductWriteServiceTest`, `ProductQueryServiceTest`, `EventEnvelopeSerializationTest`
+- [x] **T-35** `WriteServiceIT` (Testcontainers: Postgres + Kafka + MinIO)
+- [x] **T-36** `ReadServiceIT` (Testcontainers: Postgres + Redis + Kafka)
+- [x] ⭐ **T-37** **E2E**: `scripts/smoke-test.sh` — POST → event → projection → GET(MISS) → GET(HIT) → gambar
+- [x] `[P]` **T-38** Test resiliensi: Redis di-*pause* di dalam IT; Kafka & S3 diuji manual
 
-## Fase 7 — Delivery
-- [ ] **T-39** `Dockerfile` multi-stage + layered jar × 2
-- [ ] **T-40** `docker-compose.app.yml` — full stack sekali `up`
-- [ ] **T-41** `README.md` lengkap
-- [ ] `[P]` **T-42** File `.http` + `scripts/smoke-test.sh`
+## Fase 7 — Delivery ✅
+- [x] **T-39** `Dockerfile` multi-stage × 2 (non-root, healthcheck, heap mengikuti batas container)
+- [x] **T-40** `docker-compose.app.yml` — seluruh stack sekali `make up-all`
+- [x] **T-41** `README.md` lengkap
+- [x] `[P]` **T-42** `requests.http` + `scripts/smoke-test.sh`
 
 ---
 
@@ -73,7 +73,33 @@ Saya akan berhenti dan lapor di 3 titik ini (kecuali Anda minta lain):
 3. **Setelah Fase 7** — selesai, semua item Definition of Done hijau
 
 ## Progres
-`30 / 43 selesai` — **CHECKPOINT 2 tercapai.** Fase 0–4 tuntas dan terverifikasi berjalan.
+`43 / 43 selesai` — **CHECKPOINT 3 tercapai. Seluruh rencana tuntas.**
+
+### Bukti verifikasi Checkpoint 3 (cross-cutting, test, delivery)
+| Yang diuji | Hasil |
+|---|---|
+| **Trace id lintas service** | sebelum diperbaiki: tercatat 5× di write-service, **0× di read-service**. Sesudah: satu trace id yang sama muncul di kedua log |
+| Health `outbox` (write) | `UP` dengan detail `pending`/`failed`; hanya `DOWN` kalau database tidak terbaca |
+| Health `readCache` (read) | `UP` saat Redis hidup; **tetap `UP`** saat Redis mati, dengan detail "TIDAK terjangkau" |
+| Log konfigurasi saat startup | tampil di kedua service; `s3 access key` tersamar jadi `min*******` |
+| Unit test | 28 test hijau (`common` 4, write 16, read 8) |
+| `WriteServiceIT` (Testcontainers) | 8 test hijau — Postgres + Kafka + MinIO sungguhan |
+| `ReadServiceIT` (Testcontainers) | 8 test hijau — termasuk Redis di-*pause* di tengah test |
+| **Total test otomatis** | **44 hijau**, `mvn verify` BUILD SUCCESS |
+| `scripts/smoke-test.sh` | 11/11 pemeriksaan lulus end-to-end; sinkronisasi ~3 detik |
+| `docker compose build` | kedua image ter-build dari akar repo |
+
+### Bug yang ditemukan dan diperbaiki selama fase ini
+| Bug | Dampak kalau tidak ketahuan |
+|---|---|
+| `OutboxPublisher` tidak menyalin header `trace-id` ke pesan Kafka | Penelusuran log terputus tepat di batas antar service — fiturnya ada di kode tapi tidak pernah bekerja |
+| Presigned URL ditandatangani untuk host internal `minio:9000` | Semua URL gambar gagal dibuka begitu aplikasi dijalankan sebagai container, padahal berkasnya baik-baik saja |
+| Bean `CacheHealthIndicator` bernama sama dengan `ProductCache` | read-service gagal start sama sekali |
+| Header offset asal di log DLT dibaca sebagai teks | Nilainya tampak kosong di log, menyulitkan penelusuran pesan yang gagal |
+| Key cache daftar pakai CRC32 (32-bit) | Dua kombinasi filter yang bertabrakan membuat klien menerima **daftar milik query lain**, dijawab 200 tanpa error |
+| Test memeriksa Redis lewat `RedisTemplate` aplikasi (timeout 200 ms) | `mvn clean verify` gagal saat mesin sibuk. Yang rusak perkakas testnya, tapi laporannya terbaca seolah aplikasi yang bermasalah — sumber "flaky test" yang menyesatkan |
+
+### Bukti verifikasi Checkpoint 2 (read-service + cache)
 
 ### Bukti verifikasi Checkpoint 2 (read-service + cache)
 | Yang diuji | Hasil |

@@ -32,11 +32,25 @@ public class ReadS3Config {
 
     private final ReadProperties properties;
 
+    /**
+     * Presigner memakai alamat yang <b>terjangkau klien</b>, bukan alamat internal.
+     *
+     * <p>Di dalam jaringan docker, storage dihubungi lewat {@code http://minio:9000} dan nama
+     * itu ikut ditandatangani ke dalam URL. Browser pengguna tidak mengenal host tersebut,
+     * sehingga semua URL gambar gagal dibuka. Karena presigner hanya menghitung tanda tangan
+     * secara lokal dan tidak pernah menghubungi S3, alamat penandatanganan boleh berbeda dari
+     * alamat yang dipakai untuk mengunggah.
+     */
     @Bean
     public S3Presigner s3Presigner() {
         ReadProperties.S3 s3 = properties.s3();
+        String signingEndpoint = (s3.publicBaseUrl() == null || s3.publicBaseUrl().isBlank())
+                ? s3.endpoint()
+                : s3.publicBaseUrl();
+        log.info("Presigned URL ditandatangani untuk alamat: {}", signingEndpoint);
+
         return S3Presigner.builder()
-                .endpointOverride(URI.create(s3.endpoint()))
+                .endpointOverride(URI.create(signingEndpoint))
                 .region(Region.of(s3.region()))
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(s3.accessKey(), s3.secretKey())))

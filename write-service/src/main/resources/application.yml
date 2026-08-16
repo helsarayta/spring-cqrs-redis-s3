@@ -107,6 +107,18 @@ app:
   idempotency:
     ttl-hours: ${IDEMPOTENCY_TTL_HOURS:24}
 
+  cors:
+    # Kosong = tidak ada header CORS yang dikirim, browser menolak permintaan lintas-origin.
+    # Default aman; isi hanya origin yang memang perlu, mis. http://localhost:3000
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:}
+
+  rate-limit:
+    # Dimatikan secara default. Hitungannya per-instance, jadi angkanya tidak berarti
+    # secara keseluruhan kalau service dijalankan lebih dari satu. Baca RateLimitFilter.
+    enabled: ${RATE_LIMIT_ENABLED:false}
+    requests: ${RATE_LIMIT_REQUESTS:100}
+    window-seconds: ${RATE_LIMIT_WINDOW_SECONDS:60}
+
   s3:
     endpoint: ${S3_ENDPOINT:http://localhost:9000}
     bucket: ${S3_BUCKET:product-images}

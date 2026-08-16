@@ -39,6 +39,17 @@ up: ## Nyalakan infra (postgres, redis, kafka, minio) dan tunggu sampai healthy
 	@echo "  MinIO API     http://localhost:9000"
 	@echo "  MinIO Console http://localhost:9001  (minioadmin / minioadmin)"
 
+.PHONY: up-all
+up-all: ## Nyalakan SEMUANYA termasuk kedua aplikasi sebagai container
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.app.yml up -d --build
+	@echo ""
+	@echo "  write-service http://localhost:8081/swagger-ui.html"
+	@echo "  read-service  http://localhost:8082/swagger-ui.html"
+
+.PHONY: down-all
+down-all: ## Matikan semuanya termasuk aplikasi
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.app.yml --profile tools down
+
 .PHONY: tools
 tools: ## Nyalakan kafka-ui di http://localhost:8090
 	$(COMPOSE) --profile tools up -d kafka-ui

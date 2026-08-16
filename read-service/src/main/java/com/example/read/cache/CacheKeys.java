@@ -4,9 +4,10 @@ import com.example.read.config.ReadProperties;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.UUID;
-import java.util.zip.CRC32;
 
 /**
  * Penyusun key Redis.
@@ -44,11 +45,28 @@ public class CacheKeys {
         return "%s:sku:%s:%s".formatted(prefix, VERSION, sku);
     }
 
-    /** Key hasil daftar. Parameter query dipadatkan jadi hash pendek. */
+    /**
+     * Key hasil daftar. Kombinasi parameter query dipadatkan jadi hash pendek.
+     *
+     * <p>Dipakai SHA-256 yang dipotong 16 digit heksadesimal (64 bit), bukan checksum seperti
+     * CRC32. Alasannya bukan keamanan melainkan tabrakan: CRC32 hanya 32 bit, dan dua
+     * kombinasi filter yang berbeda bisa menghasilkan nilai yang sama. Akibatnya bukan sekadar
+     * cache meleset — pemanggil menerima <b>daftar milik query lain</b> dan tetap dijawab 200,
+     * jadi kesalahannya tidak menimbulkan error apa pun. Dengan 64 bit, peluangnya bisa
+     * diabaikan.
+     */
     public String list(String queryDescriptor) {
-        CRC32 crc = new CRC32();
-        crc.update(queryDescriptor.getBytes(StandardCharsets.UTF_8));
-        return "%s:list:%s:%s".formatted(prefix, VERSION, HexFormat.of().toHexDigits((int) crc.getValue()));
+        return "%s:list:%s:%s".formatted(prefix, VERSION, shortHash(queryDescriptor));
+    }
+
+    private String shortHash(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash, 0, 8);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 tidak tersedia di JVM ini", e);
+        }
     }
 
     /** Key kunci single-flight, dipakai agar hanya satu pemanggil yang mengisi ulang cache. */

@@ -1,0 +1,127 @@
+### Koleksi request untuk dicoba langsung.
+### Bisa dijalankan dari IntelliJ HTTP Client atau ekstensi REST Client di VS Code.
+
+@writeUrl = http://localhost:8081
+@readUrl = http://localhost:8082
+@productId = ganti-dengan-id-dari-response-POST
+@sku = SKU-001
+
+###############################################################################
+# WRITE SERVICE (:8081) — hanya operasi tulis
+###############################################################################
+
+### Buat produk
+# Header Idempotency-Key membuat pengulangan request aman: kalau koneksi putus sebelum
+# response sampai dan klien mencoba lagi, hasilnya tetap satu produk.
+POST {{writeUrl}}/api/v1/products
+Content-Type: application/json
+Idempotency-Key: contoh-kunci-001
+
+{
+  "sku": "SKU-001",
+  "name": "Kopi Gayo 200g",
+  "description": "Arabika single origin dari dataran tinggi Gayo",
+  "price": 85000.00,
+  "currency": "IDR",
+  "stock": 12
+}
+
+### Kirim ulang request yang sama persis — perhatikan header Idempotent-Replay: true
+POST {{writeUrl}}/api/v1/products
+Content-Type: application/json
+Idempotency-Key: contoh-kunci-001
+
+{
+  "sku": "SKU-001",
+  "name": "Kopi Gayo 200g",
+  "description": "Arabika single origin dari dataran tinggi Gayo",
+  "price": 85000.00,
+  "currency": "IDR",
+  "stock": 12
+}
+
+### Ubah produk
+# If-Match berisi versi terakhir yang Anda lihat. Kalau ada orang lain yang sudah mengubah
+# lebih dulu, request ini ditolak 409 alih-alih diam-diam menimpa perubahan mereka.
+PUT {{writeUrl}}/api/v1/products/{{productId}}
+Content-Type: application/json
+If-Match: 0
+
+{
+  "name": "Kopi Gayo 200g (kemasan baru)",
+  "price": 92000.00
+}
+
+### Kurangi stok
+# Bersifat relatif, bukan absolut: dua permintaan bersamaan untuk mengurangi 1 menghasilkan
+# pengurangan 2, tidak saling menimpa.
+PATCH {{writeUrl}}/api/v1/products/{{productId}}/stock
+Content-Type: application/json
+
+{
+  "delta": -3
+}
+
+### Unggah gambar
+# Tipe berkas ditentukan dari isinya (magic bytes), bukan dari Content-Type yang dikirim.
+# Berkas non-gambar yang dinamai .png akan ditolak 415.
+POST {{writeUrl}}/api/v1/products/{{productId}}/image
+Content-Type: multipart/form-data; boundary=BATAS
+
+--BATAS
+Content-Disposition: form-data; name="file"; filename="foto.png"
+Content-Type: image/png
+
+< ./foto.png
+--BATAS--
+
+### Hapus gambar
+DELETE {{writeUrl}}/api/v1/products/{{productId}}/image
+
+### Hapus produk (soft delete, idempotent)
+DELETE {{writeUrl}}/api/v1/products/{{productId}}
+
+### Kondisi outbox — berapa event yang menunggu dikirim ke Kafka
+GET {{writeUrl}}/actuator/health
+
+###############################################################################
+# READ SERVICE (:8082) — hanya operasi baca
+###############################################################################
+
+### Ambil produk — jalankan DUA KALI dan perhatikan header X-Cache
+# Pertama  : MISS  (diambil dari database, lalu disimpan ke Redis)
+# Kedua    : HIT   (dijawab Redis)
+# Kalau Redis mati, jawabannya tetap 200 dengan X-Cache: BYPASS.
+GET {{readUrl}}/api/v1/products/{{productId}}
+
+### Ambil produk berdasarkan SKU
+GET {{readUrl}}/api/v1/products/by-sku/{{sku}}
+
+### Id yang tidak ada — jalankan DUA KALI
+# Pertama : 404 + X-Cache: MISS          (database dicek)
+# Kedua   : 404 + X-Cache: NEGATIVE_HIT  (database tidak disentuh sama sekali)
+GET {{readUrl}}/api/v1/products/00000000-0000-0000-0000-000000000000
+
+### Daftar produk
+GET {{readUrl}}/api/v1/products?page=0&size=20&sort=sourceCreatedAt,desc
+
+### Daftar dengan filter
+GET {{readUrl}}/api/v1/products?q=kopi&minPrice=50000&maxPrice=100000&status=ACTIVE
+
+### Hapus cache satu produk (alat bantu operasional)
+DELETE {{readUrl}}/api/v1/admin/cache/products/{{productId}}
+
+### Hapus seluruh cache daftar
+DELETE {{readUrl}}/api/v1/admin/cache/lists
+
+### Rasio keberhasilan cache
+GET {{readUrl}}/actuator/metrics/cache.product.hit
+
+###
+GET {{readUrl}}/actuator/metrics/cache.product.miss
+
+### Lonjakan angka ini menandakan Redis sedang bermasalah
+GET {{readUrl}}/actuator/metrics/cache.product.bypass
+
+### Kesehatan read-service — Redis mati TIDAK membuat status ini DOWN
+GET {{readUrl}}/actuator/health

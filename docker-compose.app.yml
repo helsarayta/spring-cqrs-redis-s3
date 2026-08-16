@@ -1,0 +1,66 @@
+# Overlay untuk menjalankan kedua aplikasi ikut sebagai container.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.app.yml up -d --build
+#
+# Tanpa file ini, `docker compose up` hanya menyalakan infra dan aplikasinya dijalankan
+# dari host lewat `make run-write` / `make run-read` — yang lebih nyaman saat sedang koding
+# karena tidak perlu build image setiap kali ada perubahan.
+
+services:
+
+  write-service:
+    build:
+      # Konteks build adalah akar repo, bukan folder service: keduanya membutuhkan module `common`.
+      context: .
+      dockerfile: write-service/Dockerfile
+    container_name: pc-write-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      WRITE_DB_NAME: ${WRITE_DB_NAME:-writedb}
+      DB_USER: ${DB_USER:-appuser}
+      DB_PASSWORD: ${DB_PASSWORD:-apppass}
+      S3_BUCKET: ${S3_BUCKET:-product-images}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_URL_MODE: ${S3_URL_MODE:-PRESIGNED}
+      # Presigned URL ditandatangani untuk host yang akan dibuka BROWSER, bukan untuk
+      # nama host di dalam jaringan docker. Kalau ini diisi http://minio:9000, URL-nya
+      # tidak bisa dibuka dari luar container.
+      S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-http://localhost:9000}
+    ports:
+      - "${WRITE_SERVICE_PORT:-8081}:8081"
+    restart: unless-stopped
+
+  read-service:
+    build:
+      context: .
+      dockerfile: read-service/Dockerfile
+    container_name: pc-read-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      READ_DB_NAME: ${READ_DB_NAME:-readdb}
+      DB_USER: ${DB_USER:-appuser}
+      DB_PASSWORD: ${DB_PASSWORD:-apppass}
+      S3_BUCKET: ${S3_BUCKET:-product-images}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_URL_MODE: ${S3_URL_MODE:-PRESIGNED}
+      S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-http://localhost:9000}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-600}
+    ports:
+      - "${READ_SERVICE_PORT:-8082}:8082"
+    restart: unless-stopped
