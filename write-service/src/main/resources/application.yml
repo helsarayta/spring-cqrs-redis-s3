@@ -1,0 +1,156 @@
+server:
+  port: ${WRITE_SERVICE_PORT:8081}
+  shutdown: graceful
+  error:
+    whitelabel:
+      enabled: false
+
+spring:
+  application:
+    name: write-service
+
+  lifecycle:
+    # Beri waktu request yang sedang berjalan (termasuk upload) untuk selesai saat shutdown.
+    timeout-per-shutdown-phase: 25s
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${WRITE_DB_NAME:writedb}
+    username: ${DB_USER:appuser}
+    password: ${DB_PASSWORD:apppass}
+    hikari:
+      pool-name: write-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 5000
+
+  jpa:
+    # Dimatikan: dengan open-in-view aktif, koneksi DB ditahan selama render response.
+    # Di service tulis yang juga melakukan upload S3, itu menahan koneksi jauh lebih lama
+    # dari yang diperlukan dan pool cepat habis.
+    open-in-view: false
+    hibernate:
+      # Skema dikelola Flyway. validate memastikan entity dan tabel tidak diam-diam melenceng.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # acks=all + idempotence: pesan tidak dianggap terkirim sebelum semua replika in-sync
+      # menuliskannya, dan retry internal tidak menghasilkan duplikat di broker.
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 30000
+        request.timeout.ms: 10000
+        linger.ms: 5
+        compression.type: snappy
+
+  servlet:
+    multipart:
+      max-file-size: ${MAX_IMAGE_SIZE_MB:5}MB
+      # Sedikit lebih besar dari max-file-size untuk menampung overhead field lain.
+      max-request-size: ${MAX_IMAGE_REQUEST_SIZE_MB:6}MB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  health:
+    # Kafka down TIDAK boleh membuat service ini dianggap mati: berkat outbox, tulis ke DB
+    # tetap berhasil dan event menyusul saat Kafka pulih. Statusnya tetap terlihat di /health.
+    defaults:
+      enabled: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+  api-docs:
+    path: /v3/api-docs
+
+app:
+  outbox:
+    # Jeda antar polling. 500ms = kompromi: lag publish yang tidak terasa oleh manusia,
+    # tanpa membanjiri DB dengan query kosong.
+    poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:500}
+    batch-size: ${OUTBOX_BATCH_SIZE:100}
+    # Setelah sekian percobaan, baris ditandai FAILED dan berhenti dicoba supaya tidak
+    # menghalangi antrean. Perlu perhatian manusia — termonitor lewat metrik.
+    max-attempts: ${OUTBOX_MAX_ATTEMPTS:10}
+    # Backoff eksponensial: 1s, 2s, 4s, ... dibatasi max-backoff.
+    base-backoff-seconds: 1
+    max-backoff-seconds: 300
+    # Pembersihan baris PUBLISHED yang lebih tua dari ini.
+    retention-hours: ${OUTBOX_RETENTION_HOURS:72}
+
+  idempotency:
+    ttl-hours: ${IDEMPOTENCY_TTL_HOURS:24}
+
+  s3:
+    endpoint: ${S3_ENDPOINT:http://localhost:9000}
+    bucket: ${S3_BUCKET:product-images}
+    region: ${S3_REGION:us-east-1}
+    access-key: ${S3_ACCESS_KEY:minioadmin}
+    secret-key: ${S3_SECRET_KEY:minioadmin}
+    # MinIO memerlukan path-style (http://host/bucket/key). AWS S3 asli memakai
+    # virtual-host style, jadi set false saat menunjuk ke AWS.
+    path-style-access: ${S3_PATH_STYLE:true}
+    # Hanya untuk kenyamanan development. Di produksi bucket dibuat lewat IaC.
+    auto-create-bucket: ${S3_AUTO_CREATE_BUCKET:true}
+    max-image-size-mb: ${MAX_IMAGE_SIZE_MB:5}
+    # PRESIGNED: bucket private, URL bertanda tangan & kedaluwarsa.
+    # PUBLIC   : bucket public-read, URL statis dari public-base-url.
+    # Nilai ini harus sejalan dengan bucket policy yang dipasang docker/minio/init-bucket.sh.
+    url-mode: ${S3_URL_MODE:PRESIGNED}
+    presign-ttl-minutes: ${S3_PRESIGN_TTL_MINUTES:15}
+    public-base-url: ${S3_PUBLIC_BASE_URL:http://localhost:9000}
+
+logging:
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{traceId:-}] %logger{36} - %msg%n"
+  level:
+    com.example: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+logging:
+  level:
+    com.example: DEBUG
+    org.hibernate.SQL: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+  datasource:
+    url: jdbc:postgresql://postgres:5432/${WRITE_DB_NAME:writedb}
+  kafka:
+    bootstrap-servers: kafka:9092
+app:
+  s3:
+    endpoint: http://minio:9000

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.example</groupId>
+        <artifactId>product-cqrs</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>common</artifactId>
+    <name>common</name>
+    <description>Kontrak bersama: event envelope, payload, error model. Sengaja TIDAK bergantung pada
+        spring-boot-starter-web / jpa supaya module ini tetap ringan dan tidak menyeret autoconfig ke kedua service.</description>
+
+    <dependencies>
+        <!-- Jackson saja, bukan starter-web: common hanya butuh serialisasi -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-json</artifactId>
+        </dependency>
+        <!-- Dibutuhkan ImageUrlResolver. Pembentukan URL gambar HARUS identik di write-service
+             (yang mengembalikannya setelah upload) dan read-service (yang mengembalikannya saat
+             GET); kalau keduanya punya salinan sendiri, keduanya akan menyimpang cepat atau lambat. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+        </dependency>
+        <!-- provided: dipakai TraceIdFilter, tapi servlet container-nya disediakan aplikasi.
+             Propagasi trace id harus persis sama di kedua service, jadi filternya dibagi
+             di sini alih-alih disalin dua kali. -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+</project>

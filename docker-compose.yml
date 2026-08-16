@@ -1,0 +1,162 @@
+version: "3.9"
+
+# Infra lokal saja (Postgres, Redis, Kafka, MinIO).
+# Kedua aplikasi Spring Boot dijalankan dari host saat development -> pakai port *_HOST di bawah.
+# Untuk menjalankan aplikasi ikut sebagai container, gabungkan dengan docker-compose.app.yml.
+
+name: product-cqrs
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: pc-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-appuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-apppass}
+      # DB pertama dibuat otomatis oleh image; DB kedua dibuat oleh init script.
+      POSTGRES_DB: ${WRITE_DB_NAME:-writedb}
+      READ_DB_NAME: ${READ_DB_NAME:-readdb}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pc-postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init-db.sh:/docker-entrypoint-initdb.d/10-init-db.sh:ro
+    healthcheck:
+      # Sebut -d eksplisit: tanpa itu pg_isready lolos sebelum init script selesai.
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-appuser} -d ${READ_DB_NAME:-readdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: pc-redis
+    # appendonly off: ini cache, kehilangan data saat restart memang tidak masalah.
+    # maxmemory-policy allkeys-lru supaya perilaku saat penuh sama seperti produksi.
+    command: >
+      redis-server
+      --appendonly no
+      --save ""
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  kafka:
+    image: apache/kafka:3.8.1
+    container_name: pc-kafka
+    ports:
+      # 29092 = listener untuk klien di HOST (aplikasi saat dev)
+      # 9092  = listener untuk klien di dalam docker network
+      - "${KAFKA_HOST_PORT:-29092}:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+    volumes:
+      - pc-kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  kafka-init:
+    image: apache/kafka:3.8.1
+    container_name: pc-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    # Skrip ditaruh di file, bukan inline di YAML: perintah multi-baris yang di-inline
+    # dipecah ulang oleh parser compose dan argumennya berantakan.
+    environment:
+      KAFKA_BOOTSTRAP_INTERNAL: kafka:9092
+    volumes:
+      - ./docker/kafka/init-topics.sh:/init-topics.sh:ro
+    entrypoint: ["/bin/sh", "/init-topics.sh"]
+    restart: "no"
+
+  minio:
+    image: minio/minio:RELEASE.2024-09-13T20-26-02Z
+    container_name: pc-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    ports:
+      - "${S3_PORT:-9000}:9000"      # S3 API
+      - "${S3_CONSOLE_PORT:-9001}:9001"  # web console
+    volumes:
+      - pc-minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-09-16T17-43-14Z
+    container_name: pc-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_BUCKET: ${S3_BUCKET:-product-images}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_URL_MODE: ${S3_URL_MODE:-PRESIGNED}
+    # Bucket policy mengikuti S3_URL_MODE:
+    #   PRESIGNED -> bucket private (default, aman)
+    #   PUBLIC    -> anonymous download diizinkan
+    volumes:
+      - ./docker/minio/init-bucket.sh:/init-bucket.sh:ro
+    entrypoint: ["/bin/sh", "/init-bucket.sh"]
+    restart: "no"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: pc-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "${KAFKA_UI_PORT:-8090}:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    profiles: ["tools"]
+    restart: unless-stopped
+
+volumes:
+  pc-postgres-data:
+  pc-kafka-data:
+  pc-minio-data:
+
+networks:
+  default:
+    name: product-cqrs-net
