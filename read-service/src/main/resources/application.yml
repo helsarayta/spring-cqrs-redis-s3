@@ -1,0 +1,164 @@
+server:
+  port: ${READ_SERVICE_PORT:8082}
+  shutdown: graceful
+  error:
+    whitelabel:
+      enabled: false
+
+spring:
+  application:
+    name: read-service
+
+  lifecycle:
+    timeout-per-shutdown-phase: 25s
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${READ_DB_NAME:readdb}
+    username: ${DB_USER:appuser}
+    password: ${DB_PASSWORD:apppass}
+    hikari:
+      pool-name: read-pool
+      # Lebih besar dari pool sisi tulis: beban baca biasanya jauh lebih tinggi, dan saat
+      # Redis bermasalah SELURUH pembacaan jatuh ke database sekaligus.
+      maximum-pool-size: 20
+      minimum-idle: 4
+      connection-timeout: 5000
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # Batas waktu satu perintah Redis. Inilah yang membuat Redis yang menggantung
+      # berubah menjadi exception cepat (QueryTimeoutException) alih-alih menahan
+      # thread request — dan exception itulah yang ditangkap ProductCache untuk
+      # fail-open ke database.
+      timeout: ${CACHE_TIMEOUT_MS:200}ms
+      connect-timeout: 1000ms
+      lettuce:
+        pool:
+          enabled: true
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+          max-wait: 200ms
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29092}
+    consumer:
+      group-id: read-model-projector
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # Nilai dibaca sebagai String lalu di-deserialize manual dengan ObjectMapper.
+      # JsonDeserializer bawaan memaksa urusan trusted-packages dan header info tipe,
+      # yang membuat producer dan consumer saling terikat pada nama kelas Java.
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # Consumer baru membaca dari awal topic supaya read model bisa dibangun dari nol.
+      auto-offset-reset: earliest
+      # Offset TIDAK di-commit otomatis: commit hanya boleh terjadi setelah projection
+      # benar-benar tersimpan, kalau tidak event bisa hilang saat consumer mati mendadak.
+      enable-auto-commit: false
+      max-poll-records: 100
+      properties:
+        isolation.level: read_committed
+        spring.json.use.type.headers: false
+    listener:
+      ack-mode: record
+      concurrency: 3
+    producer:
+      # Hanya dipakai untuk mengirim pesan bermasalah ke dead letter topic.
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  health:
+    redis:
+      # PENTING: Redis mati TIDAK boleh membuat service ini dinyatakan tidak sehat.
+      # Pembacaan tetap dilayani lewat database (fail-open), jadi menandainya DOWN akan
+      # membuat load balancer menarik instance yang sebenarnya masih berfungsi penuh.
+      # Kondisi Redis tetap terpantau lewat metrik cache.product.bypass.
+      enabled: false
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+app:
+  cache:
+    enabled: ${CACHE_ENABLED:true}
+    key-prefix: ${CACHE_KEY_PREFIX:product}
+    ttl-seconds: ${CACHE_TTL_SECONDS:600}
+    ttl-jitter-seconds: ${CACHE_TTL_JITTER_SECONDS:60}
+    null-ttl-seconds: ${CACHE_NULL_TTL_SECONDS:30}
+    list-ttl-seconds: ${CACHE_LIST_TTL_SECONDS:60}
+    timeout-ms: ${CACHE_TIMEOUT_MS:200}
+    single-flight-enabled: ${CACHE_SINGLE_FLIGHT:true}
+    lock-ttl-ms: 3000
+    lock-wait-ms: 50
+    lock-retries: 3
+
+  s3:
+    endpoint: ${S3_ENDPOINT:http://localhost:9000}
+    bucket: ${S3_BUCKET:product-images}
+    region: ${S3_REGION:us-east-1}
+    access-key: ${S3_ACCESS_KEY:minioadmin}
+    secret-key: ${S3_SECRET_KEY:minioadmin}
+    path-style-access: ${S3_PATH_STYLE:true}
+    url-mode: ${S3_URL_MODE:PRESIGNED}
+    presign-ttl-minutes: ${S3_PRESIGN_TTL_MINUTES:15}
+    public-base-url: ${S3_PUBLIC_BASE_URL:http://localhost:9000}
+
+  projection:
+    processed-event-retention-days: ${PROCESSED_EVENT_RETENTION_DAYS:30}
+
+logging:
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{traceId:-}] %logger{36} - %msg%n"
+  level:
+    com.example: INFO
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+logging:
+  level:
+    com.example: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+  datasource:
+    url: jdbc:postgresql://postgres:5432/${READ_DB_NAME:readdb}
+  data:
+    redis:
+      host: redis
+  kafka:
+    bootstrap-servers: kafka:9092
+app:
+  s3:
+    endpoint: http://minio:9000

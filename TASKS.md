@@ -32,18 +32,18 @@ Detail tiap task ada di [PLAN.md](./PLAN.md) §11. File ini dipakai untuk tracki
 - [x] **T-17** `POST|DELETE /products/{id}/image` + urutan & kompensasi anti-orphan
 - [x] `[P]` **T-18** `ImageUrlResolver` mode `PUBLIC`/`PRESIGNED` + event `PRODUCT_IMAGE_UPDATED`
 
-## Fase 4 — Read Service (:8082)
-- [ ] **T-19** Bootstrap app
-- [ ] **T-20** Flyway `readdb`: product_read_model, processed_events + index
-- [ ] ⭐ **T-21** Consumer + projector: upsert, dedup `event_id`, guard `aggregateVersion`
-- [ ] `[P]` **T-22** `DefaultErrorHandler` + backoff + DLT + DLT listener
-- [ ] **T-23** `RedisConfig` (Lettuce, timeout 200ms, serializer JSON, prefix)
-- [ ] ⭐ **T-24** **`ProductQueryService` cache-aside** (HIT/MISS/isi-ulang/negative cache/TTL+jitter)
-- [ ] ⭐ **T-25** **Fail-open saat Redis mati** (`X-Cache: BYPASS`, bukan 500)
-- [ ] ⭐ **T-26** Invalidasi cache dari projector via `afterCommit`
-- [ ] `[P]` **T-27** Query controller: by-id, by-sku, list + paging + filter
-- [ ] `[P]` **T-28** Single-flight lock anti-stampede
-- [ ] `[P]` **T-29** Metrik cache hit/miss/bypass + admin evict
+## Fase 4 — Read Service (:8082) ✅
+- [x] **T-19** Bootstrap app (port 8082, profile, actuator, springdoc)
+- [x] **T-20** Flyway `readdb`: product_read_model, processed_events + index
+- [x] ⭐ **T-21** Consumer + projector: upsert, dedup `event_id`, guard `aggregateVersion`
+- [x] `[P]` **T-22** `DefaultErrorHandler` + backoff eksponensial + DLT + DLT listener
+- [x] **T-23** Redis via Lettuce (timeout 200 ms, pool, JSON terbaca manusia, key ber-versi)
+- [x] ⭐ **T-24** **`ProductQueryService` cache-aside** (HIT/MISS/isi-ulang/negative cache/TTL+jitter)
+- [x] ⭐ **T-25** **Fail-open saat Redis mati** (`X-Cache: BYPASS`, bukan 500)
+- [x] ⭐ **T-26** Invalidasi cache dari projector via `afterCommit`
+- [x] `[P]` **T-27** Query controller: by-id, by-sku (key penunjuk), list + paging + filter
+- [x] `[P]` **T-28** Single-flight lock anti-stampede (`SET NX PX`)
+- [x] `[P]` **T-29** Metrik cache hit/miss/negative/bypass + endpoint admin evict
 
 ## Fase 5 — Cross-cutting
 - [ ] **T-30** Correlation id: HTTP → MDC → header Kafka → consumer → response
@@ -73,7 +73,29 @@ Saya akan berhenti dan lapor di 3 titik ini (kecuali Anda minta lain):
 3. **Setelah Fase 7** — selesai, semua item Definition of Done hijau
 
 ## Progres
-`19 / 43 selesai` — **CHECKPOINT 1 tercapai.** Fase 0–3 tuntas dan terverifikasi berjalan.
+`30 / 43 selesai` — **CHECKPOINT 2 tercapai.** Fase 0–4 tuntas dan terverifikasi berjalan.
+
+### Bukti verifikasi Checkpoint 2 (read-service + cache)
+| Yang diuji | Hasil |
+|---|---|
+| Read model dibangun dari nol | read-service memutar ulang seluruh topic saat start, 4 event terproyeksi |
+| `GET` pertama setelah `FLUSHALL` | `X-Cache: MISS`, key `product:v1:{id}` + `product:sku:v1:{sku}` muncul di Redis |
+| `GET` kedua & ketiga | `X-Cache: HIT` |
+| TTL key | `619` detik = 600 dasar + 19 jitter (jitter aktif) |
+| `GET` id tidak ada, pertama | `404` + `X-Cache: MISS`, key penanda ` ABSENT` TTL `30` |
+| `GET` id tidak ada, kedua | `404` + `X-Cache: NEGATIVE_HIT` — **database tidak disentuh** |
+| **Redis di-stop, 3× GET** | ketiganya `200` + `X-Cache: BYPASS`, bukan `500` |
+| Daftar produk saat Redis mati | `200` dalam 0,53 detik |
+| `/actuator/health` saat Redis mati | tetap `UP` (Redis sengaja dikecualikan dari health) |
+| Log saat Redis mati | 1 baris WARN, bukan banjir — throttle 10 detik bekerja |
+| Redis dihidupkan lagi | pulih sendiri: `MISS` lalu `HIT`, tanpa restart aplikasi |
+| Ubah nama+harga via `:8081` | tersinkron ke `:8082` dalam ~4 detik, cache ter-invalidasi lalu terisi ulang |
+| **Event basi** (versi 0 vs tersimpan 3) | ditolak, read model tidak berubah, tercatat "sudah usang" di log |
+| **Event duplikat** (`eventId` sama, versi 99) | ditolak oleh dedup, read model tidak berubah |
+| **JSON rusak** | masuk DLT tanpa retry, **lag semua partisi tetap 0** (antrean tidak tertahan) |
+| Metrik cache | `hit`/`miss`/`negative_hit`/`bypass` tercatat benar di `/actuator/metrics` |
+| Daftar + filter `q`/`minPrice` | benar; presigned image URL ikut terbentuk di hasil daftar |
+| `by-sku` | `MISS` lalu `HIT` lewat key penunjuk, produk hanya disimpan sekali di cache |
 
 ### Bukti verifikasi Checkpoint 1
 | Yang diuji | Hasil |

@@ -4,9 +4,10 @@ REST API Spring Boot dengan **jalur tulis dan jalur baca yang benar-benar terpis
 disinkronkan lewat Kafka, dengan cache Redis di depan database baca dan penyimpanan gambar
 di object storage S3-compatible.
 
-> **Status: sedang dibangun.** write-service sudah berjalan dan terverifikasi.
-> read-service, cache Redis, dan test suite belum dikerjakan — lihat [TASKS.md](./TASKS.md)
-> untuk posisi persisnya (19 dari 43 task).
+> **Status: sedang dibangun.** Kedua service sudah berjalan dan terverifikasi end-to-end,
+> termasuk cache Redis dan sinkronisasi lewat Kafka. Yang belum: test suite otomatis,
+> Dockerfile, dan beberapa hal lintas-potong — lihat [TASKS.md](./TASKS.md) untuk posisi
+> persisnya (30 dari 43 task).
 
 ---
 
@@ -60,7 +61,8 @@ Butuh: **JDK 21**, **Maven 3.9+**, **Docker**.
 cp .env.example .env
 make up          # postgres, redis, kafka, minio — tunggu sampai semua healthy
 make build
-make run-write   # write-service di :8081
+make run-write   # write-service di :8081  (jalankan di terminal terpisah)
+make run-read    # read-service  di :8082
 ```
 
 `make help` menampilkan seluruh target yang tersedia.
@@ -80,8 +82,29 @@ curl -X POST http://localhost:8081/api/v1/products \
 # Unggah gambar
 curl -X POST http://localhost:8081/api/v1/products/<id>/image -F "file=@foto.png"
 
-# Lihat event yang terbit
+# Baca dari read-service — perhatikan header X-Cache
+curl -i http://localhost:8082/api/v1/products/<id>   # X-Cache: MISS
+curl -i http://localhost:8082/api/v1/products/<id>   # X-Cache: HIT
+
+# Lihat event yang terbit / isi cache
 make consume
+make cache-keys
+```
+
+### Membuktikan sendiri klaim di atas
+
+```bash
+# Redis mati -> tetap 200, X-Cache: BYPASS
+docker compose stop redis
+curl -i http://localhost:8082/api/v1/products/<id>
+docker compose start redis
+
+# Kafka mati -> tulis tetap 201, event menyusul sendiri saat Kafka hidup lagi
+docker compose stop kafka
+curl -X POST http://localhost:8081/api/v1/products -H 'Content-Type: application/json' \
+  -d '{"sku":"SKU-002","name":"Uji","price":1000,"stock":1}'
+make psql-write   # select status, count(*) from outbox_events group by status;  -> ada PENDING
+docker compose start kafka
 ```
 
 ---
